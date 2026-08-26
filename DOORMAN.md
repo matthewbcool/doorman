@@ -21,6 +21,9 @@ This is an individual project for the Google / Devpost **All Things Agentic Hack
 - Raspberry Pi Camera Module 3 video is already streaming into Frigate.
 - The Micro-USB OTG host adapter is pending; it is required to test the Blue Yeti Nano on the Pi.
 - No audio behavior or latency claim is verified yet.
+- The responsive TypeScript application shell now includes Live, Activity, Policies, and Devices views using clearly labelled synthetic preview data.
+- The local TypeScript checks and production build pass, and the compiled home and health routes return HTTP 200. Browser interaction and visual QA have not yet been performed.
+- The PWA build generates a manifest and shell-only service worker; the console is not yet connected to Firestore, Pub/Sub, Gemini, Frigate, or edge devices.
 - This document is the single source of truth for the Doorman project.
 
 ## Architecture
