@@ -15,7 +15,7 @@ importers:
         specifier: ^6.0.1
         version: 6.0.1(supports-color@10.2.2)
       '@google/adk':
-        specifier: ^2.0.0
+        specifier: 2.0.0
         version: 2.0.0(@grpc/grpc-js@1.14.4)(express@5.2.1(supports-color@10.2.2))(supports-color@10.2.2)
       '@google/genai':
         specifier: ^2.18.0

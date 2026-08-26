@@ -2,6 +2,7 @@ import type {EdgeCommand} from '../shared/contracts.js';
 
 export interface CommandSink {
   publish(command: EdgeCommand): Promise<void>;
+  list?(): Promise<EdgeCommand[]>;
 }
 
 export class InMemoryCommandSink implements CommandSink {

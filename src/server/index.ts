@@ -9,19 +9,43 @@ import {fileURLToPath} from 'node:url';
 import {ZodError} from 'zod';
 
 import {doormanEventSchema, policySchema} from '../shared/contracts.js';
-import {InMemoryCommandSink} from './commands.js';
+import {InMemoryCommandSink, type CommandSink} from './commands.js';
 import {eventFromPubSubPush} from './pubsub.js';
-import {InMemoryDoormanState} from './state.js';
+import {InMemoryDoormanState, type DoormanState} from './state.js';
 import {DoormanWorkflow} from './workflow.js';
 
 const app = express();
 const port = Number(process.env.PORT ?? 8080);
 const agentMode = process.env.DOORMAN_AGENT_MODE === 'gemini' ? 'gemini' : 'rules';
+const stateBackend = process.env.DOORMAN_STATE_BACKEND === 'firestore' ? 'firestore' : 'memory';
+const commandBackend = process.env.DOORMAN_COMMAND_BACKEND === 'pubsub' ? 'pubsub' : 'memory';
+const projectId = process.env.GOOGLE_CLOUD_PROJECT;
+const commandTopic = process.env.DOORMAN_COMMAND_TOPIC ?? 'doorman.commands';
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
 const webDirectory = path.resolve(serverDirectory, '../../dist');
 
-const state = new InMemoryDoormanState();
-const commandSink = new InMemoryCommandSink();
+async function createState(): Promise<DoormanState> {
+  if (stateBackend === 'memory') {
+    return new InMemoryDoormanState();
+  }
+
+  const {FirestoreDoormanState} = await import('./firestore-state.js');
+  const firestoreState = new FirestoreDoormanState(projectId);
+  await firestoreState.ensureDefaultPolicies();
+  return firestoreState;
+}
+
+async function createCommandSink(): Promise<CommandSink> {
+  if (commandBackend === 'memory') {
+    return new InMemoryCommandSink();
+  }
+
+  const {PubSubCommandSink} = await import('./pubsub-commands.js');
+  return new PubSubCommandSink(commandTopic, projectId);
+}
+
+const state = await createState();
+const commandSink = await createCommandSink();
 const planner = agentMode === 'gemini'
   ? new (await import('../agent/index.js')).AdkDecisionPlanner()
   : undefined;
@@ -35,8 +59,8 @@ app.get('/api/health', (_request, response) => {
   response.json({
     service: 'doorman',
     status: 'ready',
-    state_backend: 'memory',
-    command_backend: 'memory',
+    state_backend: stateBackend,
+    command_backend: commandBackend,
     agent_mode: agentMode,
   });
 });
@@ -45,18 +69,18 @@ app.get('/api/status', async (_request, response) => {
   const [cases, policies, commands] = await Promise.all([
     state.listCases(),
     state.listPolicies(),
-    commandSink.list(),
+    commandSink.list?.() ?? Promise.resolve(null),
   ]);
 
   response.json({
-    mode: 'local',
+    mode: stateBackend === 'memory' && commandBackend === 'memory' ? 'local' : 'cloud',
     agent_mode: agentMode,
     cases: cases.length,
     enabled_policies: policies.filter((policy) => policy.enabled).length,
-    pending_debug_commands: commands.length,
+    pending_debug_commands: commands?.length ?? null,
     integrations: {
-      firestore: false,
-      pubsub: false,
+      firestore: stateBackend === 'firestore',
+      pubsub: commandBackend === 'pubsub',
       gemini: agentMode === 'gemini',
       frigate: false,
       edge: false,
@@ -95,6 +119,10 @@ app.put('/api/policies/:policyId', async (request, response) => {
 });
 
 app.get('/api/debug/commands', async (_request, response) => {
+  if (!commandSink.list) {
+    response.status(404).json({error: 'debug_commands_unavailable'});
+    return;
+  }
   response.json({items: await commandSink.list()});
 });
 
@@ -139,5 +167,7 @@ const errorHandler: ErrorRequestHandler = (
 app.use(errorHandler);
 
 app.listen(port, () => {
-  console.log(`Doorman listening on port ${port} in ${agentMode} agent mode`);
+  console.log(
+    `Doorman listening on port ${port} with ${agentMode}/${stateBackend}/${commandBackend}`,
+  );
 });

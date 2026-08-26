@@ -26,6 +26,8 @@ This is an individual project for the Google / Devpost **All Things Agentic Hack
 - The PWA build generates a manifest and shell-only service worker; the console is not yet connected to Firestore, Pub/Sub, Gemini, Frigate, or edge devices.
 - The Step 3 application API now validates versioned event, policy, case, timeline, decision, and edge-command schemas. Local rules mode stores state and commands only in memory and dynamically avoids loading ADK.
 - Offline synthetic workflow checks cover delivery, solicitor, unknown/prompt-injection-style input, duplicate delivery, policy updates, and a Pub/Sub push envelope. No Gemini or Google Cloud inference has been run.
+- Step 4 adds lazy-loaded Firestore state and Pub/Sub command adapters. They compile against the installed Google Cloud SDKs, but no live Firestore write, Pub/Sub publish, or cloud authentication has been performed yet.
+- Google ADK for TypeScript is pinned to the npm `latest` release verified on August 25, 2026: `@google/adk@2.0.0`.
 - This document is the single source of truth for the Doorman project.
 
 ## Architecture
@@ -340,6 +342,29 @@ The Cloud Run application exposes these stable routes:
 | `GET` | `/api/debug/commands` | Inspect in-memory commands during local development only |
 
 `DOORMAN_AGENT_MODE=rules` is the safe local default and performs no Gemini call. `DOORMAN_AGENT_MODE=gemini` dynamically loads the Google ADK planner and uses its Zod-constrained decision schema. The debug-command route and memory backends must not be used as the production persistence or delivery mechanism; Step 4 replaces them with Firestore and Pub/Sub adapters.
+
+### Why Zod
+
+Doorman uses Zod because TypeScript types disappear at runtime while every important input in this system is untrusted or crosses a process boundary: Frigate events, Pub/Sub messages, policy edits, stored Firestore documents, Gemini output, and edge commands. A Zod schema both validates the actual runtime value and infers its TypeScript type, preventing a hand-maintained interface from drifting away from the wire contract.
+
+Google ADK for TypeScript accepts Zod v3 and v4 objects directly as input and output schemas. Doorman can therefore use the same `agentDecisionSchema` to constrain Gemini output, validate the returned decision, and type the workflow code. This is smaller and less error-prone than maintaining separate TypeScript, JSON Schema, and agent-output definitions.
+
+Zod is not treated as a substitute for a cross-device protocol specification. Every edge payload remains versioned with `schema_version`, and the future Pi/Jetson clients must validate the same documented wire fields independently. Zod adds a small runtime dependency, but that tradeoff is appropriate for this untrusted event boundary.
+
+### Backend modes
+
+The application loads cloud libraries only when their modes are selected:
+
+| Environment setting | Local value | Cloud Run value |
+|---|---|---|
+| `DOORMAN_AGENT_MODE` | `rules` | `gemini` |
+| `DOORMAN_STATE_BACKEND` | `memory` | `firestore` |
+| `DOORMAN_COMMAND_BACKEND` | `memory` | `pubsub` |
+| `DOORMAN_COMMAND_TOPIC` | `doorman.commands` | `doorman.commands` |
+
+Firestore startup creates only missing default policy documents; it does not overwrite homeowner changes. The Pub/Sub adapter publishes schema-versioned JSON commands with case and action attributes. Pub/Sub is at-least-once delivery, so the edge must enforce each command's stable `dedupe_key` and expiry.
+
+As checked on August 25, 2026, npm's `latest` tag for Google ADK for TypeScript is `2.0.0`, and this project pins exactly `@google/adk@2.0.0`. The lockfile is authoritative for reproducible installs. An upstream 2.0.1 release workflow is visible, but 2.0.1 is not yet the published npm `latest` release.
 
 ## Event contract and test fixtures
 

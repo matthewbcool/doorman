@@ -1,4 +1,5 @@
 node_modules/
+.pnpm-store/
 dist/
 dist-server/
 .vite/
@@ -9,4 +10,3 @@ dist-server/
 .DS_Store
 .venv/
 coverage/
-
