@@ -18,11 +18,10 @@ app.get('/api/health', (_request, response) => {
 });
 
 app.use(express.static(webDirectory));
-app.get('*', (_request, response) => {
+app.get('/{*splat}', (_request, response) => {
   response.sendFile(path.join(webDirectory, 'index.html'));
 });
 
 app.listen(port, () => {
   console.log(`Doorman listening on port ${port}`);
 });
-
