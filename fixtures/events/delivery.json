@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "event_id": "demo-delivery-001",
+  "source_event_id": "frigate-demo-delivery-001",
+  "occurred_at": "2026-08-25T21:41:03Z",
+  "type": "delivery_dropoff",
+  "zone": "front_porch",
+  "confidence": 0.94,
+  "package_detected": true,
+  "intent": "delivery",
+  "media_shared": false,
+  "interaction_state": "PERSON_DETECTED"
+}

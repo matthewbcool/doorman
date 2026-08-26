@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "event_id": "demo-halloween-001",
+  "source_event_id": "frigate-demo-halloween-001",
+  "occurred_at": "2026-10-31T23:12:00Z",
+  "type": "halloween_visitor",
+  "zone": "front_porch",
+  "confidence": 0.92,
+  "package_detected": false,
+  "intent": "social",
+  "media_shared": true,
+  "visual_observation": {
+    "apparel": ["black hat"],
+    "carrying": ["toy parrot"],
+    "costume": "pirate",
+    "scene_summary": "A visitor in a pirate costume is waiting at the door.",
+    "identity_attempted": false,
+    "image_persisted": false
+  },
+  "interaction_state": "PROCESSING"
+}

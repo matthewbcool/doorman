@@ -24,6 +24,8 @@ This is an individual project for the Google / Devpost **All Things Agentic Hack
 - The responsive TypeScript application shell now includes Live, Activity, Policies, and Devices views using clearly labelled synthetic preview data.
 - The local TypeScript checks and production build pass, and the compiled home and health routes return HTTP 200. Browser interaction and visual QA have not yet been performed.
 - The PWA build generates a manifest and shell-only service worker; the console is not yet connected to Firestore, Pub/Sub, Gemini, Frigate, or edge devices.
+- The Step 3 application API now validates versioned event, policy, case, timeline, decision, and edge-command schemas. Local rules mode stores state and commands only in memory and dynamically avoids loading ADK.
+- Offline synthetic workflow checks cover delivery, solicitor, unknown/prompt-injection-style input, duplicate delivery, policy updates, and a Pub/Sub push envelope. No Gemini or Google Cloud inference has been run.
 - This document is the single source of truth for the Doorman project.
 
 ## Architecture
@@ -320,6 +322,24 @@ Frigate person event → local disclosure → microphone opens
 → Pi audio → Jetson voice gateway → Gemini Live
 → typed intent only → Cloud Run workflow agent
 ```
+
+## Application API
+
+The Cloud Run application exposes these stable routes:
+
+| Method | Route | Purpose |
+|---|---|---|
+| `GET` | `/api/health` | Runtime health and active backend modes |
+| `GET` | `/api/status` | Case, policy, command, and integration summary |
+| `GET` | `/api/cases` | List interaction cases and their decision timelines |
+| `GET` | `/api/cases/:caseId` | Read one interaction case |
+| `GET` | `/api/policies` | List editable household policies |
+| `PUT` | `/api/policies/:policyId` | Update one trusted household policy |
+| `POST` | `/api/events` | Direct local or administrative event ingress |
+| `POST` | `/api/events/pubsub` | Standard authenticated Pub/Sub push ingress |
+| `GET` | `/api/debug/commands` | Inspect in-memory commands during local development only |
+
+`DOORMAN_AGENT_MODE=rules` is the safe local default and performs no Gemini call. `DOORMAN_AGENT_MODE=gemini` dynamically loads the Google ADK planner and uses its Zod-constrained decision schema. The debug-command route and memory backends must not be used as the production persistence or delivery mechanism; Step 4 replaces them with Firestore and Pub/Sub adapters.
 
 ## Event contract and test fixtures
 

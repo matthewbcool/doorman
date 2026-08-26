@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "event_id": "demo-solicitor-001",
+  "source_event_id": "frigate-demo-solicitor-001",
+  "occurred_at": "2026-08-25T22:02:00Z",
+  "type": "solicitor_detected",
+  "zone": "front_porch",
+  "confidence": 0.91,
+  "package_detected": false,
+  "intent": "solicitor",
+  "media_shared": false,
+  "interaction_state": "PROCESSING"
+}
