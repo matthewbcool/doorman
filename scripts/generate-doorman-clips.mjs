@@ -86,7 +86,7 @@ await mkdir(outputDirectory, {recursive: true});
 for (const clip of clips) {
   const response = await client.models.generateContent({
     model,
-    contents: [{parts: [{text: clip.prompt}]}],
+    contents: [{role: 'user', parts: [{text: clip.prompt}]}],
     config: {
       responseModalities: ['AUDIO'],
       speechConfig: {
