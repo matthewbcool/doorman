@@ -12,6 +12,6 @@
     "outDir": "dist-server",
     "sourceMap": true
   },
-  "include": ["src/server", "src/agent", "src/shared"]
+  "include": ["src/server", "src/agent", "src/shared", "src/edge"]
 }
 

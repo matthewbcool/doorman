@@ -23,6 +23,7 @@
     "@google/genai": "^2.18.0",
     "@react-three/fiber": "^9.7.0",
     "express": "^5.2.1",
+    "mqtt": "^5.15.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "three": "^0.185.1",

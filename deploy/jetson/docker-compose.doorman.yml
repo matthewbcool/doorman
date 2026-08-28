@@ -1,0 +1,25 @@
+services:
+  doorman-edge:
+    build:
+      context: /home/mattbcool/doorman
+      dockerfile: Dockerfile
+    image: doorman-edge:step6
+    container_name: doorman-edge
+    restart: unless-stopped
+    init: true
+    command: ["node", "dist-server/edge/index.js"]
+    environment:
+      GOOGLE_CLOUD_PROJECT: doorman-hack-2026
+      GOOGLE_APPLICATION_CREDENTIALS: /var/run/secrets/google/adc.json
+      DOORMAN_EVENTS_TOPIC: doorman.events
+      DOORMAN_COMMAND_SUBSCRIPTION: doorman-commands-edge
+      DOORMAN_MQTT_URL: mqtt://mosquitto:1883
+      DOORMAN_MQTT_TOPIC: frigate/events
+      DOORMAN_EDGE_DRY_RUN: "true"
+    volumes:
+      - /home/mattbcool/.config/gcloud/application_default_credentials.json:/var/run/secrets/google/adc.json:ro
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      - mosquitto
+      - frigate
