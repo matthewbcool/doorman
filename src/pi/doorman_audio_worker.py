@@ -8,7 +8,6 @@ import logging
 import os
 import re
 import subprocess
-import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +38,7 @@ ALLOWED_CLIPS = {
     "greeting": "greeting.wav",
     "thank_driver": "thank_driver.wav",
     "please_wait": "please_wait.wav",
+    "no_soliciting": "no_soliciting.wav",
 }
 
 processed_command_ids: deque[str] = deque(maxlen=256)

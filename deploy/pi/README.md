@@ -1,6 +1,6 @@
 # Raspberry Pi audio worker
 
-This service runs on `doorkeeper-pi` and converts allowlisted local MQTT commands into cached ALSA playback through the Yeti Nano USB audio device.
+This service runs on `doorkeeper-pi` and converts allowlisted local MQTT commands into cached ALSA playback through the Yeti Nano USB audio device. All cached speech is generated with Gemini; the Pi does not synthesize speech locally.
 
 ## MQTT contract
 
@@ -21,6 +21,7 @@ Only these clip identifiers are accepted:
 - `greeting`
 - `thank_driver`
 - `please_wait`
+- `no_soliciting`
 
 The worker publishes lifecycle states to `doorman/pi/status` at QoS 1: `received`, `started`, `completed`, `failed`, or `duplicate`.
 
@@ -30,7 +31,7 @@ The worker does not execute command text, synthesize arbitrary speech, accept ar
 
 - Worker: `/opt/doorman/pi/doorman_audio_worker.py`
 - Configuration: `/etc/doorman/audio-worker.env`
-- Cached audio: `/var/lib/doorman/audio/*.wav`
+- Gemini-generated cached audio: `/var/lib/doorman/audio/*.wav`
 - systemd unit: `/etc/systemd/system/doorman-audio.service`
 
 MQTT credentials are intentionally not stored in this repository. Add them only to the Pi's root-owned environment file after Mosquitto authentication is configured.

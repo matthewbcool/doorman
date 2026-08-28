@@ -1,17 +1,34 @@
 import {edgeCommandSchema, type EdgeCommand} from '../shared/contracts.js';
+import type {PiClipId, PiCommandSink} from './pi.js';
 
 export interface CommandExecutorOptions {
   dryRun: boolean;
+  piCommandSink?: PiCommandSink;
+}
+
+function clipForCommand(command: EdgeCommand): PiClipId | undefined {
+  switch (command.action) {
+    case 'play_cached_clip':
+      return 'thank_driver';
+    case 'start_visitor_conversation':
+      return 'greeting';
+    case 'politely_decline':
+      return 'no_soliciting';
+    case 'ask_visitor_to_wait':
+    case 'notify_homeowner':
+      return 'please_wait';
+    case 'friendly_costume_comment':
+    case 'complete_interaction':
+      return undefined;
+  }
 }
 
 export class CommandExecutor {
   private readonly processedCommands = new Map<string, number>();
 
   constructor(private readonly options: CommandExecutorOptions) {
-    if (!options.dryRun) {
-      throw new Error(
-        'Physical command execution is not implemented. Set DOORMAN_EDGE_DRY_RUN=true.',
-      );
+    if (!options.dryRun && !options.piCommandSink) {
+      throw new Error('A Pi command sink is required when dry-run is disabled.');
     }
   }
 
@@ -32,16 +49,38 @@ export class CommandExecutor {
       return;
     }
 
-    console.info(
-      '[executor] dry-run command',
-      JSON.stringify({
-        command_id: command.command_id,
-        case_id: command.case_id,
-        action: command.action,
-        response_text: command.response_text,
-        expires_at: command.expires_at,
-      }),
-    );
+    const clipId = clipForCommand(command);
+    if (!clipId) {
+      console.info(
+        `[executor] command ${command.command_id} action ${command.action} has no cached-audio mapping`,
+      );
+      this.processedCommands.set(command.command_id, expiresAt);
+      return;
+    }
+
+    const piCommand = {
+      schema_version: '1.0' as const,
+      command_id: command.command_id,
+      action: 'play_cached_clip' as const,
+      clip_id: clipId,
+      expires_at: command.expires_at,
+    };
+
+    if (this.options.dryRun) {
+      console.info(
+        '[executor] dry-run Pi command',
+        JSON.stringify({
+          ...piCommand,
+          case_id: command.case_id,
+          cloud_action: command.action,
+        }),
+      );
+    } else {
+      await this.options.piCommandSink?.publish(piCommand);
+      console.info(
+        `[executor] published ${command.command_id} as Pi clip ${clipId}`,
+      );
+    }
 
     this.processedCommands.set(command.command_id, expiresAt);
   }

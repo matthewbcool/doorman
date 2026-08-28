@@ -1,6 +1,7 @@
 import {EdgeCloudBridge} from './cloud.js';
 import {CommandExecutor} from './executor.js';
 import {FrigateBridge} from './frigate.js';
+import {PiMqttPublisher} from './pi.js';
 
 function requiredEnvironment(name: string): string {
   const value = process.env[name]?.trim();
@@ -18,6 +19,9 @@ function optionalEnvironment(name: string): string | undefined {
 async function main(): Promise<void> {
   const projectId = requiredEnvironment('GOOGLE_CLOUD_PROJECT');
   const dryRun = process.env.DOORMAN_EDGE_DRY_RUN !== 'false';
+  const mqttUrl = process.env.DOORMAN_MQTT_URL ?? 'mqtt://mosquitto:1883';
+  const mqttUsername = optionalEnvironment('DOORMAN_MQTT_USERNAME');
+  const mqttPassword = optionalEnvironment('DOORMAN_MQTT_PASSWORD');
 
   const cloud = new EdgeCloudBridge({
     projectId,
@@ -25,14 +29,26 @@ async function main(): Promise<void> {
     commandSubscription:
       process.env.DOORMAN_COMMAND_SUBSCRIPTION ?? 'doorman-commands-edge',
   });
-  const executor = new CommandExecutor({dryRun});
+  const piPublisher = new PiMqttPublisher({
+    mqttUrl,
+    commandTopic: process.env.DOORMAN_PI_COMMAND_TOPIC ?? 'doorman/pi/commands',
+    username: mqttUsername,
+    password: mqttPassword,
+  });
+  if (!dryRun) {
+    await piPublisher.start();
+  }
+  const executor = new CommandExecutor({
+    dryRun,
+    piCommandSink: dryRun ? undefined : piPublisher,
+  });
   const frigate = new FrigateBridge(
     {
-      mqttUrl: process.env.DOORMAN_MQTT_URL ?? 'mqtt://mosquitto:1883',
+      mqttUrl,
       mqttTopic: process.env.DOORMAN_MQTT_TOPIC ?? 'frigate/events',
       requiredZone: optionalEnvironment('DOORMAN_FRIGATE_REQUIRED_ZONE'),
-      username: optionalEnvironment('DOORMAN_MQTT_USERNAME'),
-      password: optionalEnvironment('DOORMAN_MQTT_PASSWORD'),
+      username: mqttUsername,
+      password: mqttPassword,
     },
     async (event) => {
       const messageId = await cloud.publishEvent(event);
@@ -46,16 +62,17 @@ async function main(): Promise<void> {
   try {
     await frigate.start();
   } catch (error) {
-    await cloud.stop();
+    await Promise.allSettled([cloud.stop(), piPublisher.stop()]);
     throw error;
   }
 
   console.info(
     JSON.stringify({
       service: 'doorman-edge',
-      mode: 'dry-run',
+      mode: dryRun ? 'dry-run' : 'live',
       project_id: projectId,
       media_shared: false,
+      pi_command_topic: process.env.DOORMAN_PI_COMMAND_TOPIC ?? 'doorman/pi/commands',
     }),
   );
 
@@ -66,7 +83,11 @@ async function main(): Promise<void> {
     }
     stopping = true;
     console.info(`[edge] ${signal} received; shutting down`);
-    const results = await Promise.allSettled([frigate.stop(), cloud.stop()]);
+    const results = await Promise.allSettled([
+      frigate.stop(),
+      cloud.stop(),
+      piPublisher.stop(),
+    ]);
     for (const result of results) {
       if (result.status === 'rejected') {
         console.error('[edge] shutdown error', result.reason);

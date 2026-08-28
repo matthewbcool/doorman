@@ -15,6 +15,7 @@ services:
       DOORMAN_COMMAND_SUBSCRIPTION: doorman-commands-edge
       DOORMAN_MQTT_URL: mqtt://mosquitto:1883
       DOORMAN_MQTT_TOPIC: frigate/events
+      DOORMAN_PI_COMMAND_TOPIC: doorman/pi/commands
       DOORMAN_EDGE_DRY_RUN: "true"
     volumes:
       - /home/mattbcool/.config/gcloud/application_default_credentials.json:/var/run/secrets/google/adc.json:ro
