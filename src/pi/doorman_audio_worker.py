@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,8 +32,12 @@ STATUS_TOPIC = os.getenv("DOORMAN_PI_STATUS_TOPIC", "doorman/pi/status")
 AUDIO_DEVICE = os.getenv("DOORMAN_AUDIO_DEVICE", "plughw:CARD=Nano,DEV=0")
 AUDIO_DIRECTORY = Path(os.getenv("DOORMAN_AUDIO_DIRECTORY", "/var/lib/doorman/audio"))
 PLAYBACK_TIMEOUT_SECONDS = int(os.getenv("DOORMAN_PLAYBACK_TIMEOUT_SECONDS", "30"))
+CLIP_COOLDOWN_SECONDS = int(os.getenv("DOORMAN_CLIP_COOLDOWN_SECONDS", "60"))
 MAX_MESSAGE_BYTES = 16_384
 COMMAND_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+if CLIP_COOLDOWN_SECONDS < 0:
+    raise RuntimeError("DOORMAN_CLIP_COOLDOWN_SECONDS must be non-negative")
 
 ALLOWED_CLIPS = {
     "greeting": "greeting.wav",
@@ -42,6 +47,7 @@ ALLOWED_CLIPS = {
 }
 
 processed_command_ids: deque[str] = deque(maxlen=256)
+last_clip_started_at: dict[str, float] = {}
 
 
 def utc_now() -> str:
@@ -173,6 +179,34 @@ def on_message(client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) ->
             return
 
         processed_command_ids.append(command_id)
+        now = time.monotonic()
+        last_started_at = last_clip_started_at.get(clip_id)
+        if (
+            last_started_at is not None
+            and now - last_started_at < CLIP_COOLDOWN_SECONDS
+        ):
+            remaining_seconds = max(
+                1,
+                int(CLIP_COOLDOWN_SECONDS - (now - last_started_at) + 0.999),
+            )
+            LOGGER.info(
+                "Suppressing cached clip %s for command %s; cooldown has %ss remaining",
+                clip_id,
+                command_id,
+                remaining_seconds,
+            )
+            publish_status(
+                client,
+                command_id,
+                "suppressed",
+                clip_id=clip_id,
+                detail=f"clip cooldown has {remaining_seconds}s remaining",
+            )
+            return
+
+        # Reserve the cooldown before playback. If the output device fails, a
+        # burst of distinct commands still cannot hammer the speaker process.
+        last_clip_started_at[clip_id] = now
         publish_status(client, command_id, "received", clip_id=clip_id)
         publish_status(client, command_id, "started", clip_id=clip_id)
         LOGGER.info("Playing cached clip %s for command %s", clip_id, command_id)
@@ -206,9 +240,10 @@ def main() -> None:
     client.reconnect_delay_set(min_delay=1, max_delay=30)
 
     LOGGER.info(
-        "Starting Doorman audio worker; device=%s audio_directory=%s",
+        "Starting Doorman audio worker; device=%s audio_directory=%s clip_cooldown=%ss",
         AUDIO_DEVICE,
         AUDIO_DIRECTORY,
+        CLIP_COOLDOWN_SECONDS,
     )
     client.connect(MQTT_HOST, MQTT_PORT, keepalive=30)
     client.loop_forever(retry_first_connection=True)

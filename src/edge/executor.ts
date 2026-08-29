@@ -4,6 +4,7 @@ import type {PiClipId, PiCommandSink} from './pi.js';
 export interface CommandExecutorOptions {
   dryRun: boolean;
   piCommandSink?: PiCommandSink;
+  clipCooldownSeconds?: number;
 }
 
 function clipForCommand(command: EdgeCommand): PiClipId | undefined {
@@ -25,11 +26,23 @@ function clipForCommand(command: EdgeCommand): PiClipId | undefined {
 
 export class CommandExecutor {
   private readonly processedCommands = new Map<string, number>();
+  private readonly lastClipPlaybackAt = new Map<PiClipId, number>();
+  private readonly clipCooldownMilliseconds: number;
 
   constructor(private readonly options: CommandExecutorOptions) {
     if (!options.dryRun && !options.piCommandSink) {
       throw new Error('A Pi command sink is required when dry-run is disabled.');
     }
+
+    const clipCooldownSeconds = options.clipCooldownSeconds ?? 60;
+    if (!Number.isInteger(clipCooldownSeconds) || clipCooldownSeconds < 0) {
+      throw new Error('clipCooldownSeconds must be a non-negative integer.');
+    }
+    this.clipCooldownMilliseconds = clipCooldownSeconds * 1_000;
+  }
+
+  recordLocalPlayback(clipId: PiClipId, playedAt = Date.now()): void {
+    this.lastClipPlaybackAt.set(clipId, playedAt);
   }
 
   async execute(input: EdgeCommand): Promise<void> {
@@ -58,6 +71,21 @@ export class CommandExecutor {
       return;
     }
 
+    const lastPlaybackAt = this.lastClipPlaybackAt.get(clipId);
+    if (
+      lastPlaybackAt !== undefined &&
+      now - lastPlaybackAt < this.clipCooldownMilliseconds
+    ) {
+      const remainingSeconds = Math.ceil(
+        (this.clipCooldownMilliseconds - (now - lastPlaybackAt)) / 1_000,
+      );
+      console.info(
+        `[executor] command ${command.command_id} clip ${clipId} suppressed; cooldown has ${remainingSeconds}s remaining`,
+      );
+      this.processedCommands.set(command.command_id, expiresAt);
+      return;
+    }
+
     const piCommand = {
       schema_version: '1.0' as const,
       command_id: command.command_id,
@@ -77,6 +105,7 @@ export class CommandExecutor {
       );
     } else {
       await this.options.piCommandSink?.publish(piCommand);
+      this.recordLocalPlayback(clipId, now);
       console.info(
         `[executor] published ${command.command_id} as Pi clip ${clipId}`,
       );
