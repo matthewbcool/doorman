@@ -1,28 +1,17 @@
 [Unit]
 Description=Doorman Raspberry Pi audio worker
-Wants=network-online.target
-After=network-online.target sound.target
+Wants=pipewire.service wireplumber.service
+After=pipewire.service wireplumber.service
 
 [Service]
 Type=simple
-User=mattbcool
-Group=mattbcool
-SupplementaryGroups=audio
-EnvironmentFile=/etc/doorman/audio-worker.env
+EnvironmentFile=%h/.config/doorman/audio-worker.env
 ExecStart=/usr/bin/python3 /opt/doorman/pi/doorman_audio_worker.py
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=10
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictSUIDSGID=true
-LockPersonality=true
-ReadOnlyPaths=/var/lib/doorman/audio
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

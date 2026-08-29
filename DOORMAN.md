@@ -14,19 +14,20 @@ This is an individual project for the Google / Devpost **All Things Agentic Hack
 - The contest work is the Doorman application, agentic workflow, Google Cloud integration, cloud state, orchestration, and demo.
 - The project must use Gemini 3.5 or newer, a Google agent framework (prefer one: Google ADK or GenKit), and a Google Cloud service.
 - Submission needs a reproducible repository and README, architecture diagram, code link, English demo video no longer than four minutes, and evidence of Google Cloud deployment.
-- Gemini 3.7 Flash is the current planned workflow model; confirm its availability in the project before implementation. Gemini Live is the planned real-time visitor voice model.
+- The deployed workflow uses Gemini 3.7 Flash through Google ADK. Real-time visitor voice uses Gemini 3.1 Flash Live Preview through the Gemini Developer API.
 
 ## Current state
 
-- Raspberry Pi Camera Module 3 video is already streaming into Frigate.
-- The Micro-USB OTG host adapter is pending; it is required to test the Blue Yeti Nano on the Pi.
-- No audio behavior or latency claim is verified yet.
-- The responsive TypeScript application shell now includes Live, Activity, Policies, and Devices views using clearly labelled synthetic preview data.
-- The local TypeScript checks and production build pass, and the compiled home and health routes return HTTP 200. Browser interaction and visual QA have not yet been performed.
-- The PWA build generates a manifest and shell-only service worker; the console is not yet connected to Firestore, Pub/Sub, Gemini, Frigate, or edge devices.
-- The Step 3 application API now validates versioned event, policy, case, timeline, decision, and edge-command schemas. Local rules mode stores state and commands only in memory and dynamically avoids loading ADK.
-- Offline synthetic workflow checks cover delivery, solicitor, unknown/prompt-injection-style input, duplicate delivery, policy updates, and a Pub/Sub push envelope. No Gemini or Google Cloud inference has been run.
-- Step 4 adds lazy-loaded Firestore state and Pub/Sub command adapters. They compile against the installed Google Cloud SDKs, but no live Firestore write, Pub/Sub publish, or cloud authentication has been performed yet.
+- The Jetson Orin Nano at the current LAN address `10.0.0.96` runs healthy Frigate and Mosquitto containers plus the Doorman edge bridge.
+- Real Frigate person events are normalized by the edge bridge and successfully reach the `doorman.events` Pub/Sub topic.
+- The Cloud Run workflow uses Firestore state, Pub/Sub commands, Google ADK, and `gemini-3.7-flash`.
+- The private `doorman-live-token-broker` Cloud Run service reads the permanent Gemini key from Secret Manager and returns only short-lived, single-use credentials to the authenticated Jetson edge identity.
+- The Raspberry Pi Zero 2 W at the current LAN address `10.0.0.243` uses a Blue Yeti Nano for 16 kHz microphone capture and a paired JBL Flip 5 for PipeWire Bluetooth output.
+- Cached clips were generated with `gemini-3.1-flash-tts-preview` using the male `Achird` voice. The greeting is locally cached and guarded by a 60-second cooldown.
+- Live visitor conversation uses `gemini-3.1-flash-live-preview`; Pi-to-Jetson and Jetson-to-Pi audio stays on local MQTT, while the Jetson maintains the bounded Gemini Live connection.
+- An end-to-end interaction was verified on August 28, 2026: a person entered the frame, heard the cached disclosure, said they were dropping off a package, and received an appropriate spoken Gemini response through the JBL speaker.
+- The PWA build emits a manifest and shell-only generated service worker. Case/audio/media data is not intentionally cached, but install icons and a custom install/update prompt are not yet present and browser installation has not been release-verified.
+- The repository builds successfully with Node 24, `@google/adk@2.0.0`, `@google/genai@2.19.0`, and `google-auth-library@11.0.2`.
 - Google ADK for TypeScript is pinned to the npm `latest` release verified on August 25, 2026: `@google/adk@2.0.0`.
 - This document is the single source of truth for the Doorman project.
 
@@ -410,6 +411,239 @@ Build and replay these fixtures before audio hardware is ready:
 - A clearly labelled synthetic workflow explainer via Veo; never fabricate or reconstruct security footage.
 - Short-lived, policy-approved redacted media analysis.
 - Scheduled daily doorstep brief.
+
+## Verified deployment and operations runbook
+
+This section records the configuration that was actually tested on August 28, 2026. LAN addresses are current DHCP addresses, not a guarantee that the router has reserved them.
+
+### Device inventory
+
+| Device | Verified configuration |
+| --- | --- |
+| Jetson Orin Nano (`polly`) | Ubuntu 22.04.5 LTS, Jetson Linux R36.4.7, kernel `5.15.148-tegra`, `aarch64`, Docker 29.7.2 |
+| Jetson LAN | `10.0.0.96`; Frigate UI/API on port `5000`; MQTT on port `1883` |
+| Raspberry Pi Zero 2 W (`doorkeeper-pi`) | Raspberry Pi OS 13 (trixie), `armv7l`, current LAN address `10.0.0.243` |
+| Microphone | Blue Microphones Yeti Nano, ALSA capture `plughw:CARD=Nano,DEV=0`, raw signed 16-bit mono PCM at 16 kHz |
+| Speaker | JBL Flip 5, Bluetooth address `20:18:5B:D1:A6:7B`, PipeWire output, paired and trusted |
+| Live output audio | Raw signed 16-bit mono PCM at 24 kHz streamed locally to the Pi |
+
+### Jetson filesystem and containers
+
+```text
+Repository:       /home/mattbcool/doorman
+Compose project:  /home/mattbcool/doorkeeper-stack
+Base compose:     /home/mattbcool/doorkeeper-stack/docker-compose.yml
+Edge overlay:     /home/mattbcool/doorkeeper-stack/docker-compose.doorman.yml
+                  -> /home/mattbcool/doorman/deploy/jetson/docker-compose.doorman.yml
+Frigate config:   /srv/doorkeeper/frigate/config
+Frigate media:    /srv/doorkeeper/frigate/media
+Mosquitto config: /srv/doorkeeper/mosquitto/config
+Mosquitto data:   /srv/doorkeeper/mosquitto/data
+Mosquitto logs:   /srv/doorkeeper/mosquitto/log
+```
+
+The base compose project contains `mosquitto` and `frigate`. The overlay adds `doorman-edge`. All three use `restart: unless-stopped`. Frigate and Mosquitto share the `doorkeeper-stack_default` Docker network; the edge joins the same compose network.
+
+The current Mosquitto listener is plaintext port `1883` with anonymous access enabled. Treat it as LAN-only hackathon configuration. Before any internet exposure, enable authentication/TLS and restrict the host firewall.
+
+The Jetson ADC file is mounted read-only into `doorman-edge`. It is local credential material and must never be copied into the repository, an image, documentation, logs, or chat.
+
+### Raspberry Pi filesystem and services
+
+```text
+Worker:       /opt/doorman/pi/doorman_audio_worker.py
+Environment: /home/mattbcool/.config/doorman/audio-worker.env
+User unit:   /home/mattbcool/.config/systemd/user/doorman-audio.service
+Cached WAVs: /var/lib/doorman/audio/*.wav
+```
+
+The Pi worker, PipeWire, PipeWire Pulse, and WirePlumber are enabled as user services. `loginctl show-user mattbcool -p Linger` returns `Linger=yes`, so they can start at boot without an interactive login.
+
+Headless Bluetooth discovery is enabled for the user WirePlumber session by:
+
+```text
+~/.config/wireplumber/wireplumber.conf.d/10-headless-bluetooth.conf
+```
+
+```ini
+wireplumber.profiles = {
+  main = {
+    monitor.bluez.seat-monitoring = disabled
+  }
+}
+```
+
+The deployed Pi environment includes:
+
+```dotenv
+DOORMAN_MQTT_HOST=10.0.0.96
+DOORMAN_MQTT_PORT=1883
+DOORMAN_PI_COMMAND_TOPIC=doorman/pi/commands
+DOORMAN_PI_STATUS_TOPIC=doorman/pi/status
+DOORMAN_AUDIO_DEVICE=pipewire
+DOORMAN_MIC_DEVICE=plughw:CARD=Nano,DEV=0
+DOORMAN_AUDIO_DIRECTORY=/var/lib/doorman/audio
+DOORMAN_CLIP_COOLDOWN_SECONDS=60
+DOORMAN_CONVERSATION_TIMEOUT_SECONDS=60
+XDG_RUNTIME_DIR=/run/user/1000
+DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+```
+
+MQTT credentials, if configured later, stay only in the Pi environment file and are never committed.
+
+### Google Cloud deployment
+
+```text
+Project ID:     doorman-hack-2026
+Project number: 794758785391
+Region:         us-west1
+```
+
+| Resource | Verified value |
+| --- | --- |
+| Workflow service | Cloud Run `doorman-workflow` |
+| Workflow service account | `doorman-workflow@doorman-hack-2026.iam.gserviceaccount.com` |
+| Workflow model | `gemini-3.7-flash` through Google ADK and the Google Cloud AI backend |
+| State | Firestore |
+| Commands | Pub/Sub topic `doorman.commands` |
+| Events | Pub/Sub topic `doorman.events` |
+| Edge command subscription | `doorman-commands-edge` |
+| Token broker | Private Cloud Run service `doorman-live-token-broker` |
+| Broker URL | `https://doorman-live-token-broker-22yms3zg7a-uw.a.run.app/api/live/token` |
+| Broker service account | `doorman-token-broker@doorman-hack-2026.iam.gserviceaccount.com` |
+| Broker secret | Secret Manager secret `doorman-gemini-api-key` |
+| Authorized broker caller | `doorman-edge@doorman-hack-2026.iam.gserviceaccount.com` with `roles/run.invoker` |
+| Live model | `gemini-3.1-flash-live-preview` through the Gemini Developer API |
+| Cached TTS model | `gemini-3.1-flash-tts-preview`, voice `Achird` |
+
+The permanent Gemini Developer API key exists only in Secret Manager. The broker issues a one-use, short-lived credential locked to the Live model and audio configuration. The Jetson never receives the permanent key, and the Pi has no Google credential.
+
+### Safe shutdown before removing power
+
+Do not pull power while either Linux device is running.
+
+On the Jetson:
+
+```bash
+sudo shutdown -h now
+```
+
+On the Pi:
+
+```bash
+sudo shutdown -h now
+```
+
+Wait until activity LEDs settle and SSH disconnects before removing power.
+
+### Recommended power-up order
+
+1. Restore the LAN/router and internet connection.
+2. Power on the Jetson and wait for SSH at its current/reserved address.
+3. Power on the JBL Flip 5 and place it in normal connection range.
+4. Power on the Pi and wait for SSH.
+5. Run the verification commands below before staging a visitor interaction.
+
+### Jetson restart and verification
+
+```bash
+cd /home/mattbcool/doorkeeper-stack
+
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.doorman.yml \
+  up -d
+
+docker ps \
+  --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+
+curl --fail --silent --show-error \
+  http://127.0.0.1:5000/api/stats \
+  | jq '{camera:.cameras.doorbell,detectors:.detectors}'
+
+docker logs --since 2m --tail 80 doorman-edge
+```
+
+Healthy Frigate should show approximately five processed frames per second, zero skipped frames under normal conditions, and a finite TensorRT inference speed. If `process_fps` is near zero, `skipped_fps` matches camera FPS, or inference speed is an enormous sentinel-like number, restart only Frigate and recheck after it becomes healthy:
+
+```bash
+docker restart frigate
+```
+
+Restarting Frigate interrupts local detection temporarily but does not intentionally call Gemini or open the Pi microphone.
+
+### Pi restart and Bluetooth verification
+
+```bash
+rfkill list bluetooth
+bluetoothctl show | grep -E 'Powered:|PowerState:'
+bluetoothctl info 20:18:5B:D1:A6:7B \
+  | grep -E 'Name:|Paired:|Trusted:|Connected:'
+wpctl status -n | sed -n '/Audio/,/Video/p'
+systemctl --user status doorman-audio.service --no-pager -l -n 30
+```
+
+If Bluetooth is soft-blocked:
+
+```bash
+sudo rfkill unblock bluetooth
+bluetoothctl power on
+```
+
+If the trusted JBL is not connected, put it in pairing/connection mode and run:
+
+```bash
+bluetoothctl connect 20:18:5B:D1:A6:7B
+```
+
+Use `wpctl status -n` to locate the current numeric JBL sink ID, then select it:
+
+```bash
+wpctl set-default <JBL-sink-id>
+```
+
+Restart the worker after PipeWire and Bluetooth are ready:
+
+```bash
+systemctl --user restart doorman-audio.service
+systemctl --user status doorman-audio.service --no-pager -l -n 30
+```
+
+### Operational event flow
+
+1. Frigate emits a person event on local MQTT.
+2. The Jetson edge bridge publishes a privacy-minimized event to Pub/Sub and immediately commands one cached disclosure greeting on the Pi.
+3. The edge obtains a one-use Live credential from the private broker.
+4. After the cached greeting completes, the Pi opens the Yeti for a maximum of 60 seconds and publishes raw 16 kHz PCM on local MQTT.
+5. The Jetson sends audio to Gemini 3.1 Live and publishes returned 24 kHz PCM to the Pi.
+6. The Pi plays the response through the current PipeWire default sink, normally the JBL Flip 5.
+7. Person-left, error, or timeout closes the Gemini session and Pi microphone. The Pi also enforces its own local deadline and terminates `arecord` in cleanup.
+8. The Cloud Run workflow independently records the case and policy decision in Firestore and publishes allowlisted commands.
+
+### Controlled end-to-end verification
+
+A real verification triggers the camera workflow, opens the microphone, streams speech to Gemini, plays audio, and may incur Gemini API charges. Disclose those effects before testing. Keep the doorway clear until both logs are being watched.
+
+Jetson log:
+
+```bash
+docker logs -f --since 30s doorman-edge
+```
+
+Pi status after the interaction:
+
+```bash
+systemctl --user status doorman-audio.service --no-pager -l -n 50
+pgrep -af '[a]record' || echo 'Microphone capture is stopped'
+```
+
+Expected behavior: one cached greeting, one bounded microphone session, one context-appropriate spoken Gemini response, and no duplicate cloud greeting. Audio is transient and is not intentionally written to disk, Pub/Sub, or Firestore.
+
+### PWA status
+
+`vite-plugin-pwa` generates `manifest.webmanifest`, `registerSW.js`, `sw.js`, and the Workbox runtime during a production build. The service worker precaches the application shell only; Doorman does not intentionally place visitor images, audio, transcripts, or case payloads into offline caches.
+
+The repository currently has no `public/` assets directory, manifest icons, explicit `virtual:pwa-register` usage, or custom `beforeinstallprompt` UI. The generated registration script exists, but installability, update prompting, offline shell behavior, and authenticated API behavior must still be checked in a deployed browser before claiming a complete installable PWA.
 
 ## Demo story
 
