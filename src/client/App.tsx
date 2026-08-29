@@ -46,9 +46,9 @@ const initialPolicies: Policy[] = [
 ];
 
 const deviceRows = [
-  ['Raspberry Pi Zero 2 W', 'Doorstep audio and camera I/O', 'Awaiting audio adapter', 'waiting'],
-  ['Jetson Orin Nano', 'Frigate perception and privacy gate', 'Video stream connected', 'online'],
-  ['Doorman Cloud', 'Policy, agent, and event timeline', 'Scaffold only', 'waiting'],
+  ['Raspberry Pi Zero 2 W', 'Doorstep audio and camera I/O', 'Audio conversation verified', 'online'],
+  ['Jetson Orin Nano', 'Frigate perception and privacy gate', 'Frigate and edge bridge verified', 'online'],
+  ['Doorman Cloud', 'Policy, agent, and event timeline', 'Workflow and Live broker deployed', 'online'],
 ];
 
 function BrandMark() {
