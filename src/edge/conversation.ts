@@ -249,7 +249,7 @@ export class ConversationBridge {
 
     try {
       active.liveSession.sendRealtimeInput({
-        media: {
+        audio: {
           data: payload.toString('base64'),
           mimeType: 'audio/pcm;rate=16000',
         },
