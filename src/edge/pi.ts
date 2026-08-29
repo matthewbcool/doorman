@@ -17,8 +17,18 @@ export interface PiPlaybackCommand {
   expires_at: string;
 }
 
+export interface PiConversationCommand {
+  schema_version: '1.0';
+  command_id: string;
+  action: 'start_conversation' | 'stop_conversation';
+  session_id: string;
+  expires_at: string;
+}
+
+export type PiCommand = PiPlaybackCommand | PiConversationCommand;
+
 export interface PiCommandSink {
-  publish(command: PiPlaybackCommand): Promise<void>;
+  publish(command: PiCommand): Promise<void>;
 }
 
 export interface PiMqttPublisherOptions {
@@ -70,7 +80,7 @@ export class PiMqttPublisher implements PiCommandSink {
     );
   }
 
-  async publish(command: PiPlaybackCommand): Promise<void> {
+  async publish(command: PiCommand): Promise<void> {
     if (!this.client?.connected) {
       throw new Error('Pi MQTT publisher is not connected.');
     }

@@ -1,9 +1,10 @@
-import {randomUUID} from 'node:crypto';
-
 import {EdgeCloudBridge} from './cloud.js';
+import {ConversationBridge} from './conversation.js';
 import {CommandExecutor} from './executor.js';
 import {FrigateBridge} from './frigate.js';
 import {PiMqttPublisher} from './pi.js';
+import {LiveTokenBrokerClient} from './token-broker.js';
+import {doormanLiveModel} from '../shared/live.js';
 
 function requiredEnvironment(name: string): string {
   const value = process.env[name]?.trim();
@@ -18,15 +19,14 @@ function optionalEnvironment(name: string): string | undefined {
   return value || undefined;
 }
 
-function nonNegativeIntegerEnvironment(name: string, fallback: number): number {
-  const rawValue = process.env[name]?.trim();
-  if (!rawValue) {
+function positiveIntegerEnvironment(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) {
     return fallback;
   }
-
-  const value = Number(rawValue);
-  if (!Number.isInteger(value) || value < 0) {
-    throw new Error(`${name} must be a non-negative integer.`);
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer.`);
   }
   return value;
 }
@@ -37,12 +37,10 @@ async function main(): Promise<void> {
   const mqttUrl = process.env.DOORMAN_MQTT_URL ?? 'mqtt://mosquitto:1883';
   const mqttUsername = optionalEnvironment('DOORMAN_MQTT_USERNAME');
   const mqttPassword = optionalEnvironment('DOORMAN_MQTT_PASSWORD');
-  const greetingCooldownSeconds = nonNegativeIntegerEnvironment(
+  const greetingCooldownSeconds = positiveIntegerEnvironment(
     'DOORMAN_GREETING_COOLDOWN_SECONDS',
     60,
   );
-  const greetingCooldownMilliseconds = greetingCooldownSeconds * 1_000;
-  const lastLocalGreetingByZone = new Map<string, number>();
 
   const cloud = new EdgeCloudBridge({
     projectId,
@@ -59,11 +57,43 @@ async function main(): Promise<void> {
   if (!dryRun) {
     await piPublisher.start();
   }
+
   const executor = new CommandExecutor({
     dryRun,
     piCommandSink: dryRun ? undefined : piPublisher,
-    clipCooldownSeconds: greetingCooldownSeconds,
+    greetingCooldownSeconds,
   });
+
+  const tokenBroker = dryRun
+    ? undefined
+    : new LiveTokenBrokerClient(
+        requiredEnvironment('DOORMAN_LIVE_TOKEN_BROKER_URL'),
+      );
+
+  const conversation = dryRun
+    ? undefined
+    : new ConversationBridge({
+        mqttUrl,
+        piCommandSink: piPublisher,
+        tokenBroker: tokenBroker!,
+        timeoutSeconds: positiveIntegerEnvironment(
+          'DOORMAN_CONVERSATION_TIMEOUT_SECONDS',
+          60,
+        ),
+        inputTopicPrefix:
+          process.env.DOORMAN_PI_AUDIO_INPUT_PREFIX ??
+          'doorman/pi/audio/input',
+        outputTopicPrefix:
+          process.env.DOORMAN_PI_AUDIO_OUTPUT_PREFIX ??
+          'doorman/pi/audio/output',
+        controlTopicPrefix:
+          process.env.DOORMAN_PI_AUDIO_CONTROL_PREFIX ??
+          'doorman/pi/audio/control',
+        username: mqttUsername,
+        password: mqttPassword,
+      });
+  await conversation?.start();
+
   const frigate = new FrigateBridge(
     {
       mqttUrl,
@@ -73,49 +103,20 @@ async function main(): Promise<void> {
       password: mqttPassword,
     },
     async (event) => {
-      if (!dryRun && event.type === 'person_entered') {
-        const now = Date.now();
-        const zoneKey = event.zone;
-        const lastGreetingAt = lastLocalGreetingByZone.get(zoneKey);
-        const cooldownActive =
-          lastGreetingAt !== undefined &&
-          now - lastGreetingAt < greetingCooldownMilliseconds;
-
-        if (cooldownActive) {
-          const remainingSeconds = Math.ceil(
-            (greetingCooldownMilliseconds - (now - lastGreetingAt)) / 1_000,
-          );
-          console.info(
-            `[edge] local greeting suppressed for ${zoneKey}; cooldown has ${remainingSeconds}s remaining`,
-          );
-        } else {
-          // Reserve the cooldown before awaiting MQTT so simultaneous fragmented
-          // Frigate tracks cannot both publish a greeting.
-          lastLocalGreetingByZone.set(zoneKey, now);
-          const commandId = `edge-greeting-${randomUUID()}`;
-          try {
-            await piPublisher.publish({
-              schema_version: '1.0',
-              command_id: commandId,
-              action: 'play_cached_clip',
-              clip_id: 'greeting',
-              expires_at: new Date(now + 30_000).toISOString(),
-            });
-            executor.recordLocalPlayback('greeting', now);
-            console.info(
-              `[edge] published immediate local greeting ${commandId} for ${zoneKey}`,
+      if (event.type === 'person_entered') {
+        const greeted = await executor.greetImmediately(event);
+        if (greeted && conversation) {
+          void conversation.open(event.source_event_id).catch((error) => {
+            console.error(
+              `[conversation] unable to open for ${event.source_event_id}`,
+              error,
             );
-          } catch (error) {
-            if (lastLocalGreetingByZone.get(zoneKey) === now) {
-              lastLocalGreetingByZone.delete(zoneKey);
-            }
-            console.error('[edge] immediate local greeting failed', error);
-          }
+          });
         }
+      } else if (event.type === 'person_left') {
+        await conversation?.closeForSource(event.source_event_id);
       }
 
-      // Cloud processing remains asynchronous from the visitor's perspective:
-      // the cached greeting is already on its way before this publish begins.
       const messageId = await cloud.publishEvent(event);
       console.info(
         `[edge] published ${event.event_id} as Pub/Sub message ${messageId}`,
@@ -127,7 +128,11 @@ async function main(): Promise<void> {
   try {
     await frigate.start();
   } catch (error) {
-    await Promise.allSettled([cloud.stop(), piPublisher.stop()]);
+    await Promise.allSettled([
+      cloud.stop(),
+      conversation?.stop(),
+      piPublisher.stop(),
+    ]);
     throw error;
   }
 
@@ -137,9 +142,14 @@ async function main(): Promise<void> {
       mode: dryRun ? 'dry-run' : 'live',
       project_id: projectId,
       media_shared: false,
-      pi_command_topic: process.env.DOORMAN_PI_COMMAND_TOPIC ?? 'doorman/pi/commands',
-      greeting_cooldown_seconds: greetingCooldownSeconds,
-      local_greeting_fast_path: !dryRun,
+      pi_command_topic:
+        process.env.DOORMAN_PI_COMMAND_TOPIC ?? 'doorman/pi/commands',
+      conversation_model:
+        doormanLiveModel,
+      conversation_timeout_seconds: positiveIntegerEnvironment(
+        'DOORMAN_CONVERSATION_TIMEOUT_SECONDS',
+        60,
+      ),
     }),
   );
 
@@ -153,6 +163,7 @@ async function main(): Promise<void> {
     const results = await Promise.allSettled([
       frigate.stop(),
       cloud.stop(),
+      conversation?.stop(),
       piPublisher.stop(),
     ]);
     for (const result of results) {

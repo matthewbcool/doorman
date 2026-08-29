@@ -12,6 +12,11 @@
     "outDir": "dist-server",
     "sourceMap": true
   },
-  "include": ["src/server", "src/agent", "src/shared", "src/edge"]
+  "include": [
+    "src/server",
+    "src/agent",
+    "src/shared",
+    "src/edge",
+    "src/token-broker"
+  ]
 }
-

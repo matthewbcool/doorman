@@ -1,10 +1,11 @@
 import {edgeCommandSchema, type EdgeCommand} from '../shared/contracts.js';
+import type {DoormanEvent} from '../shared/contracts.js';
 import type {PiClipId, PiCommandSink} from './pi.js';
 
 export interface CommandExecutorOptions {
   dryRun: boolean;
   piCommandSink?: PiCommandSink;
-  clipCooldownSeconds?: number;
+  greetingCooldownSeconds: number;
 }
 
 function clipForCommand(command: EdgeCommand): PiClipId | undefined {
@@ -26,29 +27,58 @@ function clipForCommand(command: EdgeCommand): PiClipId | undefined {
 
 export class CommandExecutor {
   private readonly processedCommands = new Map<string, number>();
-  private readonly lastClipPlaybackAt = new Map<PiClipId, number>();
-  private readonly clipCooldownMilliseconds: number;
+  private readonly greetedZones = new Map<string, number>();
+  private lastImmediateGreetingAt = 0;
 
   constructor(private readonly options: CommandExecutorOptions) {
     if (!options.dryRun && !options.piCommandSink) {
       throw new Error('A Pi command sink is required when dry-run is disabled.');
     }
-
-    const clipCooldownSeconds = options.clipCooldownSeconds ?? 60;
-    if (!Number.isInteger(clipCooldownSeconds) || clipCooldownSeconds < 0) {
-      throw new Error('clipCooldownSeconds must be a non-negative integer.');
-    }
-    this.clipCooldownMilliseconds = clipCooldownSeconds * 1_000;
   }
 
-  recordLocalPlayback(clipId: PiClipId, playedAt = Date.now()): void {
-    this.lastClipPlaybackAt.set(clipId, playedAt);
+  async greetImmediately(event: DoormanEvent): Promise<boolean> {
+    if (event.type !== 'person_entered') {
+      return false;
+    }
+    const now = Date.now();
+    const cooldownMs = this.options.greetingCooldownSeconds * 1_000;
+    const lastGreeting = this.greetedZones.get(event.zone) ?? 0;
+    if (now - lastGreeting < cooldownMs) {
+      console.info(
+        `[executor] immediate greeting suppressed for ${event.zone}; cooldown active`,
+      );
+      return false;
+    }
+
+    const commandId = `edge-greeting:${event.source_event_id}`;
+    const expiresAt = new Date(now + 30_000).toISOString();
+    if (this.options.dryRun) {
+      console.info(
+        '[executor] dry-run immediate greeting',
+        JSON.stringify({command_id: commandId, zone: event.zone}),
+      );
+    } else {
+      await this.options.piCommandSink?.publish({
+        schema_version: '1.0',
+        command_id: commandId,
+        action: 'play_cached_clip',
+        clip_id: 'greeting',
+        expires_at: expiresAt,
+      });
+      console.info(
+        `[executor] published immediate greeting for ${event.source_event_id}`,
+      );
+    }
+
+    this.greetedZones.set(event.zone, now);
+    this.lastImmediateGreetingAt = now;
+    return true;
   }
 
   async execute(input: EdgeCommand): Promise<void> {
     const command = edgeCommandSchema.parse(input);
     const now = Date.now();
-    this.pruneProcessedCommands(now);
+    this.prune(now);
 
     if (this.processedCommands.has(command.command_id)) {
       console.info(`[executor] duplicate command ${command.command_id} ignored`);
@@ -62,25 +92,22 @@ export class CommandExecutor {
       return;
     }
 
-    const clipId = clipForCommand(command);
-    if (!clipId) {
+    if (
+      command.action === 'start_visitor_conversation' &&
+      now - this.lastImmediateGreetingAt <
+        this.options.greetingCooldownSeconds * 1_000
+    ) {
       console.info(
-        `[executor] command ${command.command_id} action ${command.action} has no cached-audio mapping`,
+        `[executor] cloud greeting ${command.command_id} suppressed; edge already greeted`,
       );
       this.processedCommands.set(command.command_id, expiresAt);
       return;
     }
 
-    const lastPlaybackAt = this.lastClipPlaybackAt.get(clipId);
-    if (
-      lastPlaybackAt !== undefined &&
-      now - lastPlaybackAt < this.clipCooldownMilliseconds
-    ) {
-      const remainingSeconds = Math.ceil(
-        (this.clipCooldownMilliseconds - (now - lastPlaybackAt)) / 1_000,
-      );
+    const clipId = clipForCommand(command);
+    if (!clipId) {
       console.info(
-        `[executor] command ${command.command_id} clip ${clipId} suppressed; cooldown has ${remainingSeconds}s remaining`,
+        `[executor] command ${command.command_id} action ${command.action} has no cached-audio mapping`,
       );
       this.processedCommands.set(command.command_id, expiresAt);
       return;
@@ -97,27 +124,27 @@ export class CommandExecutor {
     if (this.options.dryRun) {
       console.info(
         '[executor] dry-run Pi command',
-        JSON.stringify({
-          ...piCommand,
-          case_id: command.case_id,
-          cloud_action: command.action,
-        }),
+        JSON.stringify({...piCommand, case_id: command.case_id}),
       );
     } else {
       await this.options.piCommandSink?.publish(piCommand);
-      this.recordLocalPlayback(clipId, now);
       console.info(
         `[executor] published ${command.command_id} as Pi clip ${clipId}`,
       );
     }
-
     this.processedCommands.set(command.command_id, expiresAt);
   }
 
-  private pruneProcessedCommands(now: number): void {
+  private prune(now: number): void {
     for (const [commandId, expiresAt] of this.processedCommands) {
       if (expiresAt <= now) {
         this.processedCommands.delete(commandId);
+      }
+    }
+    const cooldownMs = this.options.greetingCooldownSeconds * 1_000;
+    for (const [zone, greetedAt] of this.greetedZones) {
+      if (now - greetedAt >= cooldownMs) {
+        this.greetedZones.delete(zone);
       }
     }
   }
