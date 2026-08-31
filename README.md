@@ -48,7 +48,7 @@ Continuous video stays local. Microphone audio is streamed only during a bounded
 <!-- doorman-spin-up -->
 ## Reproduce Doorman
 
-This runbook starts Doorman in a safe, software-only mode. It requires no camera, microphone, Gemini request, Firestore database, or Pub/Sub topic.
+Start with the safe software-only validation path, then complete the Google Cloud, Jetson, and Raspberry Pi sections for the full Doorman system. The local path proves the application builds without requiring hardware or cloud credentials.
 
 ### 1. Prerequisites
 
@@ -57,7 +57,7 @@ This runbook starts Doorman in a safe, software-only mode. It requires no camera
 - Optional: Google Cloud CLI for cloud deployment
 - Optional: Frigate, MQTT, a Jetson, and a Raspberry Pi for the complete doorstep build
 
-### 2. Clone and run locally
+### 2. Quick local validation without hardware
 
 ~~~bash
 git clone https://github.com/matthewbcool/doorman.git
@@ -105,7 +105,7 @@ pnpm typecheck
 pnpm build
 ~~~
 
-### 5. Optional Google Cloud deployment
+### 5. Full deployment: Google Cloud control plane
 
 Create least-privilege service accounts and keep credentials in Secret Manager or workload identity, never in the repository.
 
@@ -123,11 +123,51 @@ gcloud run deploy $SERVICE --project=$PROJECT_ID --region=$REGION --image=$IMAGE
 
 Before selecting cloud backends, create Firestore, the event and command topics, the edge command subscription, and the documented service identities and IAM bindings.
 
-### 6. Optional edge and Pi deployment
+### 6. Full deployment: Jetson edge
 
-- Jetson and Frigate bridge: see deploy/jetson.
-- Raspberry Pi audio worker: see deploy/pi/README.md.
-- Architecture, event contracts, privacy rules, and deployment inventory: see DOORMAN.md.
+The Jetson runs Frigate, consumes its MQTT events, opens bounded Gemini Live sessions, publishes metadata events to Google Cloud, and forwards safe commands to the Pi.
+
+1. Start a working Frigate and MQTT stack.
+2. Configure the values documented in deploy/jetson/docker-compose.doorman.yml, including the Google Cloud project, event topic, command subscription, MQTT URL, Pi command topic, and Live token broker URL.
+3. Mount application-default credentials read-only or use workload identity.
+4. Start the edge service:
+
+~~~bash
+docker compose -f docker-compose.yml -f docker-compose.doorman.yml up -d --build doorman-edge
+docker logs --tail 40 doorman-edge
+~~~
+
+See deploy/jetson and DOORMAN.md for the complete configuration and trust boundaries.
+
+### 7. Full deployment: Raspberry Pi audio endpoint
+
+The Pi plays cached responses and opens its microphone only during a bounded conversation.
+
+1. Connect and test the microphone and speaker.
+2. Install src/pi/doorman_audio_worker.py under /opt/doorman/pi.
+3. Install deploy/pi/doorman-audio.service as a user service.
+4. Copy deploy/pi/doorman-audio.env.example to the documented user configuration path and set the MQTT host, audio devices, topics, and timeouts.
+5. Install the required cached WAV clips under /var/lib/doorman/audio.
+6. Enable and verify the worker:
+
+~~~bash
+systemctl --user daemon-reload
+systemctl --user enable --now doorman-audio.service
+systemctl --user status doorman-audio.service --no-pager
+~~~
+
+Follow deploy/pi/README.md for exact audio, Bluetooth, PipeWire, and boot-persistence steps.
+
+### 8. Verify the complete system
+
+1. Confirm Frigate publishes a person event.
+2. Confirm the Jetson publishes the event and opens one bounded conversation.
+3. Confirm the Pi plays the cached disclosure and opens the microphone only for that session.
+4. Confirm Cloud Run stores the case and timeline in Firestore.
+5. Confirm the homeowner PWA displays the report and can publish a safe response.
+6. Confirm leaving the zone or reaching the timeout closes Gemini Live and the microphone.
+
+Architecture, event contracts, privacy rules, and the complete deployment inventory are documented in DOORMAN.md.
 
 ### Safety defaults
 
