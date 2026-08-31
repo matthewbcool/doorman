@@ -190,6 +190,37 @@ export class ConversationBridge {
     }
   }
 
+  relayHomeownerMessage(sourceEventId: string, message: string): boolean {
+    const active = this.active;
+    if (
+      !active ||
+      active.closed ||
+      !active.liveSession ||
+      active.sourceEventId !== sourceEventId
+    ) {
+      console.info(`[conversation] homeowner message unavailable for ${sourceEventId}`);
+      return false;
+    }
+
+    active.liveSession.sendRealtimeInput({
+      text: [
+        'This is a trusted homeowner instruction, not visitor speech.',
+        'Say the following message aloud briefly and naturally.',
+        `Homeowner message: ${message}`,
+      ].join('\n'),
+    });
+    console.info(`[conversation] homeowner message delivered to ${active.sessionId}`);
+    return true;
+  }
+
+  async closeForHomeowner(sourceEventId: string): Promise<boolean> {
+    if (this.active?.sourceEventId !== sourceEventId) {
+      return false;
+    }
+    await this.close('homeowner_ended');
+    return true;
+  }
+
   async closeForSource(sourceEventId: string): Promise<void> {
     if (this.active?.sourceEventId === sourceEventId) {
       await this.close('person_left');

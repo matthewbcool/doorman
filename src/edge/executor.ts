@@ -18,6 +18,7 @@ function clipForCommand(command: EdgeCommand): PiClipId | undefined {
       return 'no_soliciting';
     case 'ask_visitor_to_wait':
     case 'notify_homeowner':
+    case 'relay_homeowner_message':
       return 'please_wait';
     case 'friendly_costume_comment':
     case 'complete_interaction':

@@ -4,11 +4,17 @@ import express, {
   type Request,
   type Response,
 } from 'express';
+import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {ZodError} from 'zod';
+import {z, ZodError} from 'zod';
 
-import {doormanEventSchema, policySchema} from '../shared/contracts.js';
+import {
+  doormanEventSchema,
+  edgeCommandSchema,
+  interactionCaseSchema,
+  policySchema,
+} from '../shared/contracts.js';
 import {InMemoryCommandSink, type CommandSink} from './commands.js';
 import {eventFromPubSubPush} from './pubsub.js';
 import {InMemoryDoormanState, type DoormanState} from './state.js';
@@ -51,6 +57,12 @@ const planner = agentMode === 'gemini'
   : undefined;
 const workflow = new DoormanWorkflow(state, commandSink, planner);
 const policyUpdateSchema = policySchema.partial().omit({id: true});
+const homeownerActionSchema = z.discriminatedUnion('action', [
+  z.object({action: z.literal('thank_visitor')}),
+  z.object({action: z.literal('ask_to_wait')}),
+  z.object({action: z.literal('relay_message'), message: z.string().trim().min(1).max(300)}),
+  z.object({action: z.literal('end_interaction')}),
+]);
 
 app.disable('x-powered-by');
 app.use(express.json({limit: '1mb'}));
@@ -116,6 +128,64 @@ app.put('/api/policies/:policyId', async (request, response) => {
   const policy = policySchema.parse({...current, ...update, id: current.id});
   await state.savePolicy(policy);
   response.json(policy);
+});
+
+app.post('/api/cases/:caseId/actions', async (request, response) => {
+  const interactionCase = await state.getCase(request.params.caseId);
+  if (!interactionCase) {
+    response.status(404).json({error: 'case_not_found'});
+    return;
+  }
+
+  const actionRequest = homeownerActionSchema.parse(request.body);
+  const issuedAt = new Date();
+  const responseText =
+    actionRequest.action === 'thank_visitor'
+      ? 'The homeowner says: Thank you for letting us know.'
+      : actionRequest.action === 'ask_to_wait'
+        ? 'The homeowner is checking now. Please wait a moment.'
+        : actionRequest.action === 'relay_message'
+          ? actionRequest.message
+          : '';
+  const command = edgeCommandSchema.parse({
+    schema_version: '1.0',
+    command_id: randomUUID(),
+    case_id: interactionCase.case_id,
+    trace_id: interactionCase.trace_id,
+    source_event_id: interactionCase.source_event_id,
+    issued_at: issuedAt.toISOString(),
+    action:
+      actionRequest.action === 'end_interaction'
+        ? 'complete_interaction'
+        : 'relay_homeowner_message',
+    response_text: responseText,
+    expires_at: new Date(issuedAt.getTime() + 90_000).toISOString(),
+    dedupe_key: `homeowner:${interactionCase.case_id}:${issuedAt.getTime()}`,
+  });
+
+  await commandSink.publish(command);
+  const updatedCase = interactionCaseSchema.parse({
+    ...interactionCase,
+    updated_at: issuedAt.toISOString(),
+    status: actionRequest.action === 'end_interaction' ? 'completed' : 'waiting',
+    timeline: [
+      ...interactionCase.timeline,
+      {
+        id: randomUUID(),
+        occurred_at: issuedAt.toISOString(),
+        layer: 'command',
+        type: 'homeowner.action_published',
+        summary:
+          actionRequest.action === 'relay_message'
+            ? 'Homeowner sent a message for Doorman to relay.'
+            : `Homeowner selected ${actionRequest.action.replaceAll('_', ' ')}.`,
+        policy_id: null,
+        media_shared: false,
+      },
+    ],
+  });
+  await state.saveCase(updatedCase);
+  response.status(202).json({command_id: command.command_id, interactionCase: updatedCase});
 });
 
 app.get('/api/debug/commands', async (_request, response) => {

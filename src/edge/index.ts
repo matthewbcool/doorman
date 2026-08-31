@@ -94,6 +94,10 @@ async function main(): Promise<void> {
       });
   await conversation?.start();
 
+  const catGreetingCooldownMs =
+    positiveIntegerEnvironment('DOORMAN_CAT_GREETING_COOLDOWN_SECONDS', 300) *
+    1_000;
+  let lastCatGreetingAt = 0;
   const frigate = new FrigateBridge(
     {
       mqttUrl,
@@ -122,9 +126,58 @@ async function main(): Promise<void> {
         `[edge] published ${event.event_id} as Pub/Sub message ${messageId}`,
       );
     },
+    async (catEvent) => {
+      const detectedAt = Date.now();
+      if (detectedAt - lastCatGreetingAt < catGreetingCooldownMs) {
+        console.info(
+          `[cat] greeting suppressed for ${catEvent.sourceEventId}; cooldown active`,
+        );
+        return;
+      }
+
+      if (dryRun) {
+        lastCatGreetingAt = detectedAt;
+        console.info(
+          `[cat] dry-run kitty greeting for ${catEvent.sourceEventId} in ${catEvent.zone}`,
+        );
+        return;
+      }
+
+      await piPublisher.publish({
+        schema_version: '1.0',
+        command_id: `cat-greeting:${catEvent.sourceEventId}`,
+        action: 'play_cached_clip',
+        clip_id: 'kitty_greeting',
+        expires_at: new Date(detectedAt + 15_000).toISOString(),
+      });
+      lastCatGreetingAt = detectedAt;
+      console.info(
+        `[cat] published kitty greeting for ${catEvent.sourceEventId} in ${catEvent.zone}`,
+      );
+    },
   );
 
-  cloud.startCommandConsumer((command) => executor.execute(command));
+  cloud.startCommandConsumer(async (command) => {
+    if (command.action === 'relay_homeowner_message') {
+      const delivered =
+        conversation?.relayHomeownerMessage(
+          command.source_event_id ?? '',
+          command.response_text,
+        ) ?? false;
+      console.info(
+        `[edge] homeowner message ${command.command_id} ${delivered ? 'delivered' : 'not delivered'}`,
+      );
+      return;
+    }
+    if (command.action === 'complete_interaction' && command.source_event_id) {
+      const closed = await conversation?.closeForHomeowner(command.source_event_id);
+      if (closed) {
+        console.info(`[edge] homeowner ended ${command.command_id}`);
+        return;
+      }
+    }
+    await executor.execute(command);
+  });
   try {
     await frigate.start();
   } catch (error) {

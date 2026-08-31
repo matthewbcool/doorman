@@ -2,6 +2,7 @@ import mqtt, {type MqttClient} from 'mqtt';
 
 export const piClipIds = [
   'greeting',
+  'kitty_greeting',
   'thank_driver',
   'please_wait',
   'no_soliciting',

@@ -20,6 +20,11 @@ const clips = [
       "Speak warmly, clearly, and briefly as a transparent front-door AI concierge: Hi. I'm the home's AI assistant. How can I help with your visit?",
   },
   {
+    id: 'kitty_greeting',
+    prompt:
+      "Speak warmly, playfully, and briefly in a friendly male voice: Who's a good kitty? Hi, kitty cat!",
+  },
+  {
     id: 'thank_driver',
     prompt:
       'Speak warmly and efficiently to a delivery person who may already be leaving: Thanks so much. Have a great day!',
@@ -35,6 +40,14 @@ const clips = [
       "Speak politely, firmly, and briefly: Thanks for stopping by. The household isn't accepting solicitations, but I hope you have a good day.",
   },
 ];
+
+const requestedClip = process.env.DOORMAN_TTS_CLIP?.trim();
+const selectedClips = requestedClip
+  ? clips.filter((clip) => clip.id === requestedClip)
+  : clips;
+if (selectedClips.length === 0) {
+  throw new Error(`Unknown DOORMAN_TTS_CLIP: ${requestedClip}`);
+}
 
 function pcmToWave(pcm, sampleRate = 24000, channels = 1, bitsPerSample = 16) {
   const header = Buffer.alloc(44);
@@ -83,7 +96,7 @@ const client = new GoogleGenAI({
 
 await mkdir(outputDirectory, {recursive: true});
 
-for (const clip of clips) {
+for (const clip of selectedClips) {
   const response = await client.models.generateContent({
     model,
     contents: [{role: 'user', parts: [{text: clip.prompt}]}],

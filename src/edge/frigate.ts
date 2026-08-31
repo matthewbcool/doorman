@@ -41,13 +41,23 @@ export interface FrigateBridgeOptions {
 
 type EventHandler = (event: DoormanEvent) => Promise<void>;
 
+export interface CatDetectedEvent {
+  sourceEventId: string;
+  occurredAt: string;
+  zone: string;
+}
+
+type CatHandler = (event: CatDetectedEvent) => Promise<void>;
+
 export class FrigateBridge {
   private client?: MqttClient;
   private readonly activeObjects = new Set<string>();
+  private readonly activeCats = new Set<string>();
 
   constructor(
     private readonly options: FrigateBridgeOptions,
     private readonly eventHandler: EventHandler,
+    private readonly catHandler?: CatHandler,
   ) {}
 
   async start(): Promise<void> {
@@ -134,6 +144,11 @@ export class FrigateBridge {
       return;
     }
 
+    if (frigateEvent.after.label === 'cat') {
+      await this.handleCatEvent(frigateEvent);
+      return;
+    }
+
     const event = this.normalizeEvent(frigateEvent);
     if (!event) {
       return;
@@ -152,6 +167,40 @@ export class FrigateBridge {
       } else if (event.type === 'person_left') {
         this.activeObjects.add(event.source_event_id);
       }
+    }
+  }
+
+  private async handleCatEvent(event: FrigateEvent): Promise<void> {
+    if (!this.catHandler) {
+      return;
+    }
+
+    const object = event.after;
+    if (event.type === 'end') {
+      this.activeCats.delete(object.id);
+      return;
+    }
+
+    const zones = [...object.current_zones, ...object.entered_zones];
+    const requiredZone = this.options.requiredZone;
+    const isInRequiredZone = !requiredZone || zones.includes(requiredZone);
+    if (!isInRequiredZone || this.activeCats.has(object.id)) {
+      return;
+    }
+
+    this.activeCats.add(object.id);
+    const occurredSeconds = object.frame_time ?? object.start_time;
+    const zone = requiredZone ?? zones.at(-1) ?? object.camera;
+
+    try {
+      await this.catHandler({
+        sourceEventId: object.id,
+        occurredAt: new Date(occurredSeconds * 1_000).toISOString(),
+        zone,
+      });
+    } catch (error) {
+      this.activeCats.delete(object.id);
+      console.error(`[frigate] cat greeting failed for ${object.id}`, error);
     }
   }
 

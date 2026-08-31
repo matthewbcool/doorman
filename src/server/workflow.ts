@@ -167,6 +167,7 @@ export class DoormanWorkflow {
         command_id: randomUUID(),
         case_id: caseId,
         trace_id: traceId,
+        source_event_id: event.source_event_id,
         issued_at: issuedAt.toISOString(),
         action: decision.action,
         response_text: decision.response_text,

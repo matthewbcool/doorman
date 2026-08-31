@@ -1,279 +1,325 @@
-import {useState} from 'react';
+import {useCallback, useEffect, useMemo, useState} from 'react';
 
 type View = 'live' | 'activity' | 'policies' | 'devices';
+type Urgency = 'routine' | 'important' | 'urgent';
+
+type VisitorReport = {
+  intent: 'property_issue' | 'resident_request' | 'delivery' | 'message' | 'other';
+  visitor_claimed_name: string | null;
+  relationship_claim: string | null;
+  message: string;
+  location_detail: string | null;
+  urgency: Urgency;
+  confidence: number;
+};
+
+type TimelineEntry = {
+  id: string;
+  occurred_at: string;
+  layer: 'edge' | 'workflow' | 'agent' | 'command';
+  type: string;
+  summary: string;
+};
+
+type InteractionCase = {
+  case_id: string;
+  source_event_id: string;
+  created_at: string;
+  updated_at: string;
+  status: 'active' | 'waiting' | 'completed' | 'review';
+  visitor_report: VisitorReport | null;
+  decision: {
+    classification: string;
+    decision_summary: string;
+    confidence: number;
+  };
+  timeline: TimelineEntry[];
+};
 
 type Policy = {
   id: string;
   name: string;
-  description: string;
-  response: string;
   enabled: boolean;
-  accent: string;
+  minimum_confidence: number;
+  response_text: string;
 };
 
-const navigation: Array<{id: View; label: string; shortLabel: string}> = [
-  {id: 'live', label: 'Live door', shortLabel: 'Live'},
-  {id: 'activity', label: 'Activity', shortLabel: 'Activity'},
-  {id: 'policies', label: 'Policies', shortLabel: 'Policies'},
-  {id: 'devices', label: 'Devices', shortLabel: 'Devices'},
+type ApiStatus = {
+  mode: string;
+  agent_mode: string;
+  cases: number;
+  enabled_policies: number;
+  integrations: Record<string, boolean>;
+};
+
+type ActionName =
+  | 'thank_visitor'
+  | 'ask_to_wait'
+  | 'relay_message'
+  | 'end_interaction';
+
+const navigation: Array<{id: View; label: string}> = [
+  {id: 'live', label: 'Live'},
+  {id: 'activity', label: 'Activity'},
+  {id: 'policies', label: 'Policies'},
+  {id: 'devices', label: 'System'},
 ];
 
-const initialPolicies: Policy[] = [
-  {
-    id: 'delivery',
-    name: 'Delivery drop-off',
-    description: 'Thank the driver immediately and create a package summary.',
-    response: 'Thanks so much — have a great day!',
-    enabled: true,
-    accent: 'sage',
-  },
-  {
-    id: 'solicitor',
-    name: 'Solicitors',
-    description: 'Politely decline without interrupting the homeowner.',
-    response: 'The household is not interested. Have a good day.',
-    enabled: true,
-    accent: 'clay',
-  },
-  {
-    id: 'halloween',
-    name: 'Halloween mode',
-    description: 'Offer safe, upbeat comments about visible costume details.',
-    response: 'A friendly greeting grounded in one privacy-minimized frame.',
-    enabled: false,
-    accent: 'plum',
-  },
-];
-
-const deviceRows = [
-  ['Raspberry Pi Zero 2 W', 'Doorstep audio and camera I/O', 'Audio conversation verified', 'online'],
-  ['Jetson Orin Nano', 'Frigate perception and privacy gate', 'Frigate and edge bridge verified', 'online'],
-  ['Doorman Cloud', 'Policy, agent, and event timeline', 'Workflow and Live broker deployed', 'online'],
-];
-
-function BrandMark() {
-  return (
-    <span aria-hidden="true" className="brand-mark">
-      <span className="brand-door" />
-      <span className="brand-light" />
-    </span>
-  );
+async function api<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, {
+    ...init,
+    headers: {'content-type': 'application/json', ...init?.headers},
+  });
+  if (!response.ok) {
+    throw new Error(`${response.status} ${response.statusText}`);
+  }
+  return response.json() as Promise<T>;
 }
 
-function Navigation({active, onChange}: {active: View; onChange: (view: View) => void}) {
-  return (
-    <>
-      <nav aria-label="Doorman sections" className="side-navigation">
-        {navigation.map((item) => (
-          <button
-            aria-current={active === item.id ? 'page' : undefined}
-            className="nav-button"
-            key={item.id}
-            onClick={() => onChange(item.id)}
-            type="button"
-          >
-            <span aria-hidden="true" className={`nav-symbol nav-symbol-${item.id}`} />
-            {item.label}
-          </button>
-        ))}
-      </nav>
-
-      <nav aria-label="Doorman mobile sections" className="mobile-navigation">
-        {navigation.map((item) => (
-          <button
-            aria-current={active === item.id ? 'page' : undefined}
-            className="mobile-nav-button"
-            key={item.id}
-            onClick={() => onChange(item.id)}
-            type="button"
-          >
-            <span aria-hidden="true" className={`nav-symbol nav-symbol-${item.id}`} />
-            {item.shortLabel}
-          </button>
-        ))}
-      </nav>
-    </>
-  );
+function time(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(new Date(value));
 }
 
-function PreviewFlag() {
-  return (
-    <div className="preview-flag" role="status">
-      <span aria-hidden="true" className="preview-dot" />
-      Interface preview · synthetic event
-    </div>
-  );
+function title(value: string): string {
+  return value.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function LiveView() {
+function StatusDot({active}: {active: boolean}) {
+  return <span className={`status-dot ${active ? 'active' : ''}`} aria-hidden="true" />;
+}
+
+function ReportCard({report}: {report: VisitorReport}) {
   return (
-    <div className="view-stack">
-      <section className="live-card" aria-labelledby="live-heading">
-        <div className="live-visual" aria-label="Abstract front door visualization">
-          <div className="porch-glow" />
-          <div className="door-frame">
-            <span className="door-window" />
-            <span className="door-handle" />
-          </div>
-          <div className="doorman-orb">
-            <span className="orb-eye" />
-            <span className="orb-eye" />
-          </div>
-          <div className="visual-caption">
-            <span className="soft-pulse" />
-            Visual context ready
-          </div>
+    <section className={`report-card urgency-${report.urgency}`} aria-labelledby="report-title">
+      <div className="report-heading">
+        <div>
+          <p className="eyebrow">Visitor report</p>
+          <h2 id="report-title">{title(report.intent)}</h2>
         </div>
+        <span className="urgency-pill">{report.urgency}</span>
+      </div>
 
-        <div className="live-copy">
-          <div className="section-kicker">
-            <span className="case-pill">DELIVERY</span>
-            <span>Case D-0148</span>
-          </div>
-          <h1 id="live-heading">Doorman is handling this.</h1>
-          <p className="live-summary">
-            A delivery was detected at the front porch. The driver has been thanked,
-            and the package has been added to your activity.
-          </p>
+      <blockquote>{report.message}</blockquote>
 
-          <div className="decision-strip">
-            <div>
-              <span className="decision-label">Decision</span>
-              <strong>Thank driver automatically</strong>
-            </div>
-            <div>
-              <span className="decision-label">Confidence</span>
-              <strong>94%</strong>
-            </div>
-            <div>
-              <span className="decision-label">Privacy</span>
-              <strong>Face redacted</strong>
-            </div>
-          </div>
-
-          <div className="action-row" aria-label="Manual visitor actions">
-            <button className="primary-action" type="button">Send another thanks</button>
-            <button className="secondary-action" type="button">Ask them to wait</button>
-          </div>
+      <dl className="report-grid">
+        <div>
+          <dt>Self-reported name</dt>
+          <dd>{report.visitor_claimed_name ?? 'Not provided'}</dd>
         </div>
+        <div>
+          <dt>Self-reported relationship</dt>
+          <dd>{report.relationship_claim ?? 'Not provided'}</dd>
+        </div>
+        <div>
+          <dt>Reported location</dt>
+          <dd>{report.location_detail ?? 'Not provided'}</dd>
+        </div>
+        <div>
+          <dt>Report understanding</dt>
+          <dd>{Math.round(report.confidence * 100)}%</dd>
+        </div>
+      </dl>
+
+      <p className="identity-note">
+        Identity details are supplied by the visitor and have not been verified.
+      </p>
+    </section>
+  );
+}
+
+function Timeline({items}: {items: TimelineEntry[]}) {
+  const ordered = [...items].sort((a, b) =>
+    b.occurred_at.localeCompare(a.occurred_at),
+  );
+  return (
+    <ol className="timeline">
+      {ordered.map((item) => (
+        <li key={item.id}>
+          <span className="timeline-time">{time(item.occurred_at)}</span>
+          <div>
+            <strong>{title(item.type)}</strong>
+            <p>{item.summary}</p>
+            <small>{item.layer}</small>
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function ActionPanel({interactionCase, onRefresh}: {
+  interactionCase: InteractionCase;
+  onRefresh: () => Promise<void>;
+}) {
+  const [message, setMessage] = useState('');
+  const [pending, setPending] = useState<ActionName | null>(null);
+  const [result, setResult] = useState('');
+
+  const send = async (action: ActionName, customMessage?: string) => {
+    setPending(action);
+    setResult('');
+    try {
+      await api(`/api/cases/${interactionCase.case_id}/actions`, {
+        method: 'POST',
+        body: JSON.stringify({action, message: customMessage}),
+      });
+      if (action === 'relay_message') {
+        setMessage('');
+      }
+      setResult('Sent to the doorstep.');
+      await onRefresh();
+    } catch (error) {
+      setResult(error instanceof Error ? error.message : 'Action failed');
+    } finally {
+      setPending(null);
+    }
+  };
+
+  return (
+    <section className="action-card" aria-labelledby="actions-title">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Homeowner actions</p>
+          <h2 id="actions-title">Respond now</h2>
+        </div>
+        <span className="case-status">{interactionCase.status}</span>
+      </div>
+
+      <div className="quick-actions">
+        <button disabled={pending !== null} onClick={() => void send('thank_visitor')}>
+          Thank visitor
+        </button>
+        <button disabled={pending !== null} onClick={() => void send('ask_to_wait')}>
+          Ask them to wait
+        </button>
+        <button className="quiet" disabled={pending !== null} onClick={() => void send('end_interaction')}>
+          End interaction
+        </button>
+      </div>
+
+      <label className="message-field">
+        Tell Gemini what to say
+        <textarea
+          maxLength={300}
+          onChange={(event) => setMessage(event.target.value)}
+          placeholder="Thanks for letting me know. I’m checking the leak now."
+          rows={3}
+          value={message}
+        />
+      </label>
+      <button
+        className="primary"
+        disabled={pending !== null || !message.trim()}
+        onClick={() => void send('relay_message', message.trim())}
+      >
+        Send response
+      </button>
+      {result && <p className="action-result" role="status">{result}</p>}
+    </section>
+  );
+}
+
+function LiveView({interactionCase, onRefresh}: {
+  interactionCase?: InteractionCase;
+  onRefresh: () => Promise<void>;
+}) {
+  if (!interactionCase) {
+    return (
+      <section className="empty-card">
+        <p className="eyebrow">Front door</p>
+        <h1>No interactions yet</h1>
+        <p>Doorman is ready. New visitor activity will appear here automatically.</p>
       </section>
+    );
+  }
 
-      <div className="two-column-grid">
-        <section className="content-card" aria-labelledby="conversation-heading">
-          <div className="card-heading">
-            <div>
-              <p className="eyebrow">CURRENT INTERACTION</p>
-              <h2 id="conversation-heading">At the door</h2>
-            </div>
-            <span className="completed-label">Completed in 8s</span>
+  return (
+    <div className="content-grid">
+      <div className="main-column">
+        <section className="case-header">
+          <div>
+            <p className="eyebrow">Latest interaction · {time(interactionCase.updated_at)}</p>
+            <h1>{interactionCase.visitor_report ? 'A visitor needs your attention' : title(interactionCase.decision.classification)}</h1>
+            <p>{interactionCase.decision.decision_summary}</p>
           </div>
-
-          <div className="conversation">
-            <div className="speaker-row agent-row">
-              <span className="speaker-mark">D</span>
-              <div>
-                <span className="speaker-name">Doorman</span>
-                <p>Hi — I’m the home’s AI assistant. You can leave the package by the door.</p>
-              </div>
-            </div>
-            <div className="speaker-row visitor-row">
-              <span className="speaker-mark">V</span>
-              <div>
-                <span className="speaker-name">Visitor</span>
-                <p>Perfect, thank you.</p>
-              </div>
-            </div>
-            <div className="speaker-row agent-row">
-              <span className="speaker-mark">D</span>
-              <div>
-                <span className="speaker-name">Doorman</span>
-                <p>Thanks so much — have a great day!</p>
-              </div>
-            </div>
-          </div>
+          <span className={`case-status status-${interactionCase.status}`}>
+            {interactionCase.status}
+          </span>
         </section>
 
-        <section className="content-card" aria-labelledby="timeline-heading">
-          <div className="card-heading compact-heading">
+        {interactionCase.visitor_report && <ReportCard report={interactionCase.visitor_report} />}
+
+        <section className="timeline-card">
+          <div className="section-heading">
             <div>
-              <p className="eyebrow">DECISION TRACE</p>
-              <h2 id="timeline-heading">What happened</h2>
+              <p className="eyebrow">Observability</p>
+              <h2>Interaction timeline</h2>
             </div>
+            <button className="quiet" onClick={() => void onRefresh()}>Refresh</button>
           </div>
-          <ol className="timeline">
-            <li>
-              <span className="timeline-time">2:41:03</span>
-              <div><strong>Person and package detected</strong><p>Frigate · front porch zone</p></div>
-            </li>
-            <li>
-              <span className="timeline-time">2:41:05</span>
-              <div><strong>Delivery policy applied</strong><p>Gemini observation · no identity attempted</p></div>
-            </li>
-            <li>
-              <span className="timeline-time">2:41:08</span>
-              <div><strong>Thank-you played locally</strong><p>Pi speaker · thanks-driver-v1</p></div>
-            </li>
-          </ol>
+          <Timeline items={interactionCase.timeline} />
         </section>
       </div>
+
+      <ActionPanel interactionCase={interactionCase} onRefresh={onRefresh} />
     </div>
   );
 }
 
-function ActivityView() {
-  const items = [
-    ['Today · 2:41 PM', 'Delivery handled', 'Driver thanked · package waiting', 'Auto'],
-    ['Yesterday · 6:18 PM', 'Visitor message', 'Asked for Matthew · homeowner notified', 'Review'],
-    ['Monday · 11:02 AM', 'Solicitor handled', 'Politely declined · no interruption', 'Auto'],
-  ];
-
+function ActivityView({cases}: {cases: InteractionCase[]}) {
   return (
-    <section className="page-section" aria-labelledby="activity-heading">
-      <div className="page-intro">
-        <p className="eyebrow">ACTIVITY</p>
-        <h1 id="activity-heading">A quiet record of the doorstep.</h1>
-        <p>Decision summaries are kept. Private model reasoning and visitor media are not.</p>
-      </div>
-      <div className="activity-list">
-        {items.map(([time, title, detail, mode]) => (
-          <article className="activity-item" key={time}>
-            <div className="activity-time">{time}</div>
-            <div className="activity-copy"><h2>{title}</h2><p>{detail}</p></div>
-            <span className="mode-pill">{mode}</span>
-          </article>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function PoliciesView({policies, onToggle}: {policies: Policy[]; onToggle: (id: string) => void}) {
-  return (
-    <section className="page-section" aria-labelledby="policies-heading">
-      <div className="page-intro">
-        <p className="eyebrow">HOUSE RULES</p>
-        <h1 id="policies-heading">You set the boundaries. Doorman handles the moment.</h1>
-        <p>These controls change only the interface preview until Firestore is connected.</p>
-      </div>
-      <div className="policy-grid">
-        {policies.map((policy) => (
-          <article className={`policy-card policy-${policy.accent}`} key={policy.id}>
-            <div className="policy-topline">
-              <span className="policy-icon" aria-hidden="true">
-                {policy.id === 'delivery' ? '01' : policy.id === 'solicitor' ? '02' : '10/31'}
-              </span>
-              <button
-                aria-checked={policy.enabled}
-                aria-label={`${policy.enabled ? 'Disable' : 'Enable'} ${policy.name}`}
-                className="switch"
-                onClick={() => onToggle(policy.id)}
-                role="switch"
-                type="button"
-              ><span /></button>
+    <section className="page-card">
+      <p className="eyebrow">Stored cases</p>
+      <h1>Activity</h1>
+      <div className="case-list">
+        {cases.map((item) => (
+          <article key={item.case_id}>
+            <div>
+              <strong>{item.visitor_report ? title(item.visitor_report.intent) : title(item.decision.classification)}</strong>
+              <p>{item.visitor_report?.message ?? item.decision.decision_summary}</p>
             </div>
-            <h2>{policy.name}</h2>
-            <p>{policy.description}</p>
-            <div className="policy-response"><span>Response</span><q>{policy.response}</q></div>
+            <div className="case-list-meta">
+              <span>{item.status}</span>
+              <time>{time(item.updated_at)}</time>
+            </div>
+          </article>
+        ))}
+        {!cases.length && <p>No activity has been stored.</p>}
+      </div>
+    </section>
+  );
+}
+
+function PoliciesView({policies, onRefresh}: {policies: Policy[]; onRefresh: () => Promise<void>}) {
+  const toggle = async (policy: Policy) => {
+    await api(`/api/policies/${policy.id}`, {
+      method: 'PUT',
+      body: JSON.stringify({enabled: !policy.enabled}),
+    });
+    await onRefresh();
+  };
+  return (
+    <section className="page-card">
+      <p className="eyebrow">Household rules</p>
+      <h1>Policies</h1>
+      <div className="policy-list">
+        {policies.map((policy) => (
+          <article key={policy.id}>
+            <div>
+              <strong>{policy.name}</strong>
+              <p>{policy.response_text}</p>
+            </div>
+            <button
+              aria-pressed={policy.enabled}
+              className={policy.enabled ? 'toggle enabled' : 'toggle'}
+              onClick={() => void toggle(policy)}
+            >
+              {policy.enabled ? 'Enabled' : 'Disabled'}
+            </button>
           </article>
         ))}
       </div>
@@ -281,60 +327,95 @@ function PoliciesView({policies, onToggle}: {policies: Policy[]; onToggle: (id: 
   );
 }
 
-function DevicesView() {
+function DevicesView({status}: {status?: ApiStatus}) {
   return (
-    <section className="page-section" aria-labelledby="devices-heading">
-      <div className="page-intro">
-        <p className="eyebrow">SYSTEM LAYERS</p>
-        <h1 id="devices-heading">From the porch to the agent.</h1>
-        <p>Each layer reports its own status so a failure never looks like an empty doorstep.</p>
-      </div>
-      <div className="device-list">
-        {deviceRows.map(([name, role, status, tone], index) => (
-          <article className="device-row" key={name}>
-            <span className="device-index">0{index + 1}</span>
-            <div className="device-copy"><h2>{name}</h2><p>{role}</p></div>
-            <span className={`device-status device-${tone}`}><span aria-hidden="true" />{status}</span>
-          </article>
+    <section className="page-card">
+      <p className="eyebrow">Runtime</p>
+      <h1>System</h1>
+      <div className="integration-list">
+        {Object.entries(status?.integrations ?? {}).map(([name, active]) => (
+          <div key={name}>
+            <StatusDot active={active} />
+            <span>{title(name)}</span>
+            <strong>{active ? 'Connected' : 'Not reported'}</strong>
+          </div>
         ))}
       </div>
+      {status && (
+        <dl className="system-summary">
+          <div><dt>Backend</dt><dd>{status.mode}</dd></div>
+          <div><dt>Agent</dt><dd>{status.agent_mode}</dd></div>
+          <div><dt>Cases</dt><dd>{status.cases}</dd></div>
+          <div><dt>Policies enabled</dt><dd>{status.enabled_policies}</dd></div>
+        </dl>
+      )}
     </section>
   );
 }
 
 export function App() {
-  const [activeView, setActiveView] = useState<View>('live');
-  const [policies, setPolicies] = useState(initialPolicies);
+  const [view, setView] = useState<View>('live');
+  const [cases, setCases] = useState<InteractionCase[]>([]);
+  const [policies, setPolicies] = useState<Policy[]>([]);
+  const [status, setStatus] = useState<ApiStatus>();
+  const [error, setError] = useState('');
+  const [updatedAt, setUpdatedAt] = useState<Date>();
 
-  const togglePolicy = (id: string) => {
-    setPolicies((current) => current.map((policy) =>
-      policy.id === id ? {...policy, enabled: !policy.enabled} : policy,
-    ));
-  };
+  const refresh = useCallback(async () => {
+    try {
+      const [caseData, policyData, statusData] = await Promise.all([
+        api<{items: InteractionCase[]}>('/api/cases'),
+        api<{items: Policy[]}>('/api/policies'),
+        api<ApiStatus>('/api/status'),
+      ]);
+      setCases(caseData.items);
+      setPolicies(policyData.items);
+      setStatus(statusData);
+      setUpdatedAt(new Date());
+      setError('');
+    } catch (refreshError) {
+      setError(refreshError instanceof Error ? refreshError.message : 'Unable to refresh');
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 2_500);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
+
+  const latestCase = useMemo(() => cases[0], [cases]);
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand-lockup">
-          <BrandMark />
-          <div><strong>Doorman</strong><span>Front-door concierge</span></div>
+      <header className="topbar">
+        <div>
+          <span className="brand">Doorman</span>
+          <span className="brand-subtitle">Homeowner console</span>
         </div>
-        <Navigation active={activeView} onChange={setActiveView} />
-        <div className="privacy-note">
-          <span aria-hidden="true" className="privacy-lock">●</span>
-          <div><strong>Privacy first</strong><p>Continuous video and identity stay at home.</p></div>
+        <div className="connection-state" role="status">
+          <StatusDot active={!error} />
+          {error ? `Disconnected · ${error}` : `Live${updatedAt ? ` · ${time(updatedAt.toISOString())}` : ''}`}
         </div>
-      </aside>
+      </header>
 
-      <main className="main-content">
-        <header className="topbar">
-          <div><span className="home-label">HOME</span><strong>Front porch</strong></div>
-          <PreviewFlag />
-        </header>
-        {activeView === 'live' && <LiveView />}
-        {activeView === 'activity' && <ActivityView />}
-        {activeView === 'policies' && <PoliciesView policies={policies} onToggle={togglePolicy} />}
-        {activeView === 'devices' && <DevicesView />}
+      <nav className="navigation" aria-label="Doorman sections">
+        {navigation.map((item) => (
+          <button
+            aria-current={view === item.id ? 'page' : undefined}
+            key={item.id}
+            onClick={() => setView(item.id)}
+          >
+            {item.label}
+          </button>
+        ))}
+      </nav>
+
+      <main>
+        {view === 'live' && <LiveView interactionCase={latestCase} onRefresh={refresh} />}
+        {view === 'activity' && <ActivityView cases={cases} />}
+        {view === 'policies' && <PoliciesView policies={policies} onRefresh={refresh} />}
+        {view === 'devices' && <DevicesView status={status} />}
       </main>
     </div>
   );

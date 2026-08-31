@@ -60,6 +60,7 @@ SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 ALLOWED_CLIPS = {
     "greeting": "greeting.wav",
+    "kitty_greeting": "kitty_greeting.wav",
     "thank_driver": "thank_driver.wav",
     "please_wait": "please_wait.wav",
     "no_soliciting": "no_soliciting.wav",
